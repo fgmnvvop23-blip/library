@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>ระบบสแกนยืม-คืนหนังสือด้วย RFID และ Barcode</title>
+    <style>
+        body { font-family: 'Kanit', sans-serif; background: #eef2f7; padding: 20px; text-align: center; }
+        .container { max-width: 600px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+        .mode-selector { margin-bottom: 25px; }
+        .mode-btn { padding: 10px 20px; font-size: 16px; cursor: pointer; border: 1px solid #ddd; background: #fff; margin: 0 5px; border-radius: 6px; }
+        .active-mode { background: #0070f3; color: white; border-color: #0070f3; }
+        .scan-box { background: #f8f9fa; padding: 20px; border: 2px dashed #0070f3; border-radius: 8px; margin-bottom: 20px; }
+        input[type="text"] { width: 90%; padding: 12px; font-size: 18px; border-radius: 6px; border: 1px solid #ccc; text-align: center; }
+        .log-list { text-align: left; background: #333; color: #fff; padding: 15px; border-radius: 6px; font-family: monospace; max-height: 200px; overflow-y: auto; }
+        .status-badge { font-weight: bold; padding: 5px 10px; border-radius: 4px; }
+        .success { color: #28a745; } .error { color: #dc3545; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>⚡ ระบบสแกน ยืม-คืน หนังสืออัตโนมัติ</h2>
+    <p>ใช้ได้กับเครื่องสแกน Barcode, QR Code และเครื่องอ่านบัตร RFID</p>
+
+    <div class="mode-selector">
+        <button id="btn-borrow" class="mode-btn active-mode" onclick="setMode('borrow')">📥 โหมดสแกนยืมหนังสือ</button>
+        <button id="btn-return" class="mode-btn" onclick="setMode('return')">📤 โหมดสแกนคืนหนังสือ</button>
+    </div>
+
+    <div class="scan-box">
+        <h3 id="mode-title">📍 โหมดปัจจุบัน: ยืมหนังสือ</h3>
+        
+        <div style="margin-bottom: 15px;">
+            <label>1. สแกนบัตรสมาชิก/บัตร RFID</label><br>
+            <input type="text" id="scan-user" placeholder="ยิงสแกนบัตรสมาชิกตรงนี้..." autofocus autocomplete="off">
+        </div>
+
+        <div>
+            <label>2. สแกนรหัสหนังสือ (Barcode/QR/RFID บนปก)</label><br>
+            <input type="text" id="scan-book" placeholder="ยิงสแกนรหัสหนังสือตรงนี้..." autocomplete="off">
+        </div>
+    </div>
+
+    <div id="status-message" class="status-badge"></div>
+
+    <h4>📋 บันทึกประวัติการสแกนในเซสชันนี้:</h4>
+    <div id="scan-log" class="log-list">ระบบพร้อมทำงาน...</div>
+</div>
+
+<script>
+    let currentMode = 'borrow'; // ค่าเริ่มต้นคือโหมด ยืม ('borrow' หรือ 'return')
+    let isProcessing = false; // ป้องกันสแกนเบิ้ล (Debounce)
+
+    // --- Web Audio API สำหรับเสียงแจ้งเตือน ---
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playBeep(type) {
+        if (audioCtx.state === 'suspended') { audioCtx.resume(); }
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        
+        if (type === 'success') {
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); // เสียงสูง ติ๊ดสั้นๆ
+            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.15);
+        } else {
+            oscillator.type = 'square';
+            oscillator.frequency.setValueAtTime(200, audioCtx.currentTime); // เสียงต่ำ ตื๊ดดยาวๆ
+            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.5);
+        }
+    }
+    // ------------------------------------
+
+    function setMode(mode) {
+        currentMode = mode;
+        document.getElementById('btn-borrow').classList.toggle('active-mode', mode === 'borrow');
+        document.getElementById('btn-return').classList.toggle('active-mode', mode === 'return');
+        document.getElementById('mode-title').innerText = mode === 'borrow' ? '📍 โหมดปัจจุบัน: ยืมหนังสือ' : '📍 โหมดปัจจุบัน: คืนหนังสือ';
+        clearForm();
+    }
+
+    // จับพฤติกรรมการยิงจากเครื่องสแกน (เมื่อสแกนเสร็จเครื่องจะจำลองการกด Enter)
+    document.getElementById('scan-user').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            // เมื่อยิงรหัสสมาชิกเสร็จ ให้โฟกัสไปรอที่ช่องรหัสหนังสือทันที
+            document.getElementById('scan-book').focus();
+            addLog(`[สแกนสมาชิก] พบรหัส: ${this.value}`);
+        }
+    });
+
+    document.getElementById('scan-book').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            addLog(`[สแกนหนังสือ] พบรหัส: ${this.value}`);
+            processTransaction();
+        }
+    });
+
+    // ส่งข้อมูลไปยังหลังบ้าน Cloudflare API เพื่อประมวลผลการยืมหรือคืน
+    async function processTransaction() {
+        if (isProcessing) return; // ป้องกันการทำงานซ้ำซ้อนถ้ากำลังโหลด
+
+        const userId = document.getElementById('scan-user').value;
+        const bookId = document.getElementById('scan-book').value;
+        const statusMsg = document.getElementById('status-message');
+
+        if (!userId || !bookId) {
+            playBeep('error');
+            alert('กรุณาสแกนให้ครบทั้งรหัสสมาชิกและรหัสหนังสือ!');
+            return;
+        }
+
+        isProcessing = true;
+        statusMsg.className = "status-badge";
+        statusMsg.innerText = "กำลังประมวลผลรายการ...";
+
+        // เลือกยิง API ให้ถูกจุดตามโหมดที่เลือกไว้
+        const apiUrl = currentMode === 'borrow' ? '/api/borrow' : '/api/return';
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId, bookId })
+            });
+            const result = await response.json();
+
+            if (response.ok && result.success) {
+                playBeep('success');
+                statusMsg.className = "status-badge success";
+                statusMsg.innerText = `สำเร็จ: ${result.message}`;
+                addLog(`[สำเร็จ] ${result.message}`);
+                clearForm();
+            } else {
+                playBeep('error');
+                statusMsg.className = "status-badge error";
+                statusMsg.innerText = `ผิดพลาด: ${result.error}`;
+                addLog(`[ล้มเหลว] ${result.error}`);
+            }
+        } catch (error) {
+            playBeep('error');
+            statusMsg.className = "status-badge error";
+            statusMsg.innerText = "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ (กรุณาเช็กอินเทอร์เน็ต)";
+        } finally {
+            isProcessing = false;
+        }
+    }
+
+    function clearForm() {
+        document.getElementById('scan-book').value = '';
+        // ปล่อยรหัสสมาชิกไว้เผื่อกรณีที่นักศึกษาคนเดิมต้องการยืมหนังสือต่อหลายๆ เล่มพร้อมกัน
+        document.getElementById('scan-book').focus(); 
+    }
+
+    function addLog(text) {
+        const logBox = document.getElementById('scan-log');
+        const time = new Date().toLocaleTimeString();
+        logBox.innerHTML = `[${time}] ${text}<br>` + logBox.innerHTML;
+    }
+</script>
+</body>
+</html>
