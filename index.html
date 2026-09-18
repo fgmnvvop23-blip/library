@@ -121,8 +121,7 @@
         statusMsg.innerText = "กำลังประมวลผลรายการ...";
 
         // ส่งข้อมูลตรงไปยัง Google Apps Script Web App
-        const GAS_URL = https://script.google.com/macros/s/AKfycbzG9I5DcuRkhSWpEtGIOYHVkQDgcDXAO4-aCu04Zs7ypE7BFEdDUldOyzZC7fOxslMdaA/exec
-
+        const GAS_URL = 'https://script.google.com/macros/s/AKfycbzG9I5DcuRkhSWpEtGIOYHVkQDgcDXAO4-aCu04Zs7ypE7BFEdDUldOyzZC7fOxslMdaA/exec';
         try {
             const response = await fetch(GAS_URL, {
                 method: 'POST',
